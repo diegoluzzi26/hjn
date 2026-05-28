@@ -1,0 +1,11 @@
+{
+  "C_Cpp.intelliSenseEngine": "default",
+  "idf.extensionActivationMode": "always",
+  "clangd.path": "C:\\Espressif\\tools\\esp-clang\\esp-20.1.1_20250829\\esp-clang\\bin\\clangd.exe",
+  "clangd.arguments": [
+    "--background-index",
+    "--query-driver=**",
+    "--compile-commands-dir=c:\\Users\\Diego\\OneDrive - Associacao Antonio Vieira\\Documentos\\UNISINOS\\esp32_blink\\rfid\\build"
+  ],
+  "idf.currentSetup": "C:\\esp\\v6.0.1\\esp-idf"
+}
