@@ -15,7 +15,9 @@ idf_component_register(
         src/driver/rc522_i2c.c
     REQUIRES
         esp_event
-        # esp_driver_spi # introduced in esp-idf 5.3, autoincluded in 'driver' component
+        esp_driver_gpio
+        esp_driver_spi
+        esp_driver_i2c
         driver # required for i2c, TODO: migrate to the new API
 )
 

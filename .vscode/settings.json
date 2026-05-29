@@ -7,5 +7,7 @@
     "--query-driver=**",
     "--compile-commands-dir=c:\\Users\\Diego\\OneDrive - Associacao Antonio Vieira\\Documentos\\UNISINOS\\esp32_blink\\rfid\\build"
   ],
-  "idf.currentSetup": "C:\\esp\\v6.0.1\\esp-idf"
+  "idf.currentSetup": "C:\\esp\\v6.0.1\\esp-idf",
+  "idf.flashType": "UART",
+  "idf.portWin": "COM9"
 }
