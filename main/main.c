@@ -9,6 +9,10 @@
 #include "mqtt_client.h"
 #include "rc522.h"
 #include "driver/rc522_spi.h"
+#include "freertos/task.h"
+#include "freertos/queue.h"
+#include "freertos/semphr.h"
+#include "driver/gpio.h"
 #include "rc522_picc.h"
 
 // ─── Configurações — edite aqui ───────────────────────────────────────────────
@@ -16,6 +20,10 @@
 #define WIFI_PASS        "62707558"
 #define MQTT_BROKER_URI  "mqtt://broker.hivemq.com:1883"   // IP ou hostname do broker
 #define MQTT_TOPIC       "RFID"                 // Tópico MQTT para publicar os eventos
+
+#define LED_VERMELHO_GPIO   22
+#define LED_VERDE_GPIO      4
+
 // ──────────────────────────────────────────────────────────────────────────────
 
 static const char *TAG = "rfid";
@@ -23,7 +31,11 @@ static const char *TAG = "rfid";
 static EventGroupHandle_t wifi_event_group;
 #define WIFI_CONNECTED_BIT BIT0
 
-static esp_mqtt_client_handle_t mqtt_client = NULL;
+static esp_mqtt_client_handle_t mqtt_client = NULL;// Handle do cliente MQTT
+
+static QueueHandle_t led_queue = NULL;// Fila para comandos de LED
+
+static SemaphoreHandle_t mqtt_mutex = NULL;// Mutex para proteger o acesso ao cliente MQTT
 
 // ─── RC522 ────────────────────────────────────────────────────────────────────
 
@@ -47,12 +59,18 @@ typedef struct {
     uint8_t uid[10];
     uint8_t length;
     const char *name;
-} authorized_uid_t;
+} authorized_uid_t;// Estrutura para armazenar UID autorizados
+
+typedef enum {
+    LED_ON_PERMITIDO,
+    LED_ON_NEGADO,
+} led_cmd_t;// Tipos de comando para o LED
+
 
 static const authorized_uid_t authorized_uids[] = {
     { .uid = {0xF3, 0x54, 0xB3, 0x29}, .length = 4, .name = "Cartão 1" },
     { .uid = {0x01, 0x02, 0x03, 0x04}, .length = 4, .name = "Cartão 2" },
-};
+};// Lista de UID autorizados
 
 #define AUTHORIZED_COUNT (sizeof(authorized_uids) / sizeof(authorized_uids[0]))
 
@@ -65,7 +83,7 @@ static const authorized_uid_t *find_authorized(const rc522_picc_uid_t *uid)
         }
     }
     return NULL;
-}
+}// Função para verificar se o UID é autorizado
 
 // ─── Wi-Fi ────────────────────────────────────────────────────────────────────
 
@@ -83,8 +101,40 @@ static void wifi_event_handler(void *arg, esp_event_base_t base,
         ESP_LOGI(TAG, "IP obtido: " IPSTR, IP2STR(&event->ip_info.ip));
         xEventGroupSetBits(wifi_event_group, WIFI_CONNECTED_BIT);
     }
-}
+}// Manipulador de eventos para Wi-Fi e IP
 
+static void gpio_leds_init(void)
+{
+    gpio_config_t io_conf = {
+        .pin_bit_mask = (1ULL << LED_VERDE_GPIO) | (1ULL << LED_VERMELHO_GPIO),
+        .mode = GPIO_MODE_OUTPUT,
+        .pull_up_en = GPIO_PULLUP_DISABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE, .intr_type = GPIO_INTR_DISABLE,
+    };
+    gpio_config(&io_conf);
+    gpio_set_level(LED_VERDE_GPIO, 0);
+    gpio_set_level(LED_VERMELHO_GPIO, 0);
+}// Configura os pinos dos LEDs como saída e os desliga
+
+static void led_task(void *arg)
+{
+    led_cmd_t cmd;
+    while (1) {
+        xQueueReceive(led_queue, &cmd, portMAX_DELAY);
+        if (cmd == LED_ON_PERMITIDO) {
+            gpio_set_level(LED_VERDE_GPIO, 1);
+            gpio_set_level(LED_VERMELHO_GPIO, 0);
+            vTaskDelay(pdMS_TO_TICKS(2000));// Mantém o LED verde aceso por 2 segundos
+            gpio_set_level(LED_VERDE_GPIO, 0);
+        } else {
+            gpio_set_level(LED_VERDE_GPIO, 0);
+            gpio_set_level(LED_VERMELHO_GPIO, 1);
+            vTaskDelay(pdMS_TO_TICKS(2000));// Mantém o LED vermelho aceso por 2 segundos
+            gpio_set_level(LED_VERMELHO_GPIO, 0);
+        }
+    }
+} // Tarefa para controlar os LEDs com base nos comandos recebidos pela fila
+        
 static void wifi_init(void)
 {
     wifi_event_group = xEventGroupCreate();
@@ -112,7 +162,7 @@ static void wifi_init(void)
     ESP_LOGI(TAG, "Aguardando conexão Wi-Fi...");
     xEventGroupWaitBits(wifi_event_group, WIFI_CONNECTED_BIT, pdFALSE, pdTRUE, portMAX_DELAY);
     ESP_LOGI(TAG, "Wi-Fi conectado");
-}
+}// Inicializa o Wi-Fi, conecta à rede e aguarda até obter um IP
 
 // ─── MQTT ─────────────────────────────────────────────────────────────────────
 
@@ -133,7 +183,7 @@ static void mqtt_event_handler(void *arg, esp_event_base_t base,
         default:
             break;
     }
-}
+}// Manipulador de eventos para o cliente MQTT
 
 static void mqtt_init(void)
 {
@@ -143,7 +193,7 @@ static void mqtt_init(void)
     mqtt_client = esp_mqtt_client_init(&mqtt_cfg);
     esp_mqtt_client_register_event(mqtt_client, ESP_EVENT_ANY_ID, mqtt_event_handler, NULL);
     esp_mqtt_client_start(mqtt_client);
-}
+}// Inicializa o cliente MQTT, registra o manipulador de eventos e inicia a conexão
 
 static void mqtt_publish_access(const rc522_picc_uid_t *uid, const authorized_uid_t *auth)
 {
@@ -155,7 +205,7 @@ static void mqtt_publish_access(const rc522_picc_uid_t *uid, const authorized_ui
         char byte_str[4];
         snprintf(byte_str, sizeof(byte_str), i == 0 ? "%02X" : ":%02X", uid->value[i]);
         strncat(uid_str, byte_str, sizeof(uid_str) - strlen(uid_str) - 1);
-    }
+    }// Converte o UID para uma string legível
 
     char payload[128];
     if (auth != NULL) {
@@ -166,10 +216,18 @@ static void mqtt_publish_access(const rc522_picc_uid_t *uid, const authorized_ui
         snprintf(payload, sizeof(payload),
                  "{\"uid\":\"%s\",\"status\":\"NEGADO\"}",
                  uid_str);
-    }
+    }// Monta o payload JSON para publicar no MQTT
 
-    esp_mqtt_client_publish(mqtt_client, MQTT_TOPIC, payload, 0, 1, 0);
-    ESP_LOGI(TAG, "MQTT publicado: %s", payload);
+    //esp_mqtt_client_publish(mqtt_client, MQTT_TOPIC, payload, 0, 1, 0);
+    //ESP_LOGI(TAG, "MQTT publicado: %s", payload);
+    if (xSemaphoreTake(mqtt_mutex, pdMS_TO_TICKS(500)) == pdTRUE)
+    {
+        esp_mqtt_client_publish(mqtt_client, MQTT_TOPIC, payload, 0, 1, 0);
+        ESP_LOGI(TAG, "MQTT publicado: %s", payload);
+        xSemaphoreGive(mqtt_mutex);
+    } else {
+        ESP_LOGW(TAG, "Não foi possível publicar MQTT: mutex ocupado");
+    }// Publica o evento de acesso no MQTT, protegendo o cliente com um mutex
 }
 
 // ─── Evento RFID ─────────────────────────────────────────────────────────────
@@ -195,15 +253,25 @@ static void on_picc_state_changed(void *arg, esp_event_base_t base,
             printf("ACESSO NEGADO\n");
         }
 
+        led_cmd_t cmd = (auth != NULL) ? LED_ON_PERMITIDO : LED_ON_NEGADO;
+        xQueueSend(led_queue, &cmd, 0);
+
         mqtt_publish_access(&picc->uid, auth);
     }
-}
+}// Manipulador de eventos para mudanças no estado do PICC, verifica o UID, controla os LEDs e publica no MQTT
 
 // ─── Main ─────────────────────────────────────────────────────────────────────
 
 void app_main(void)
 {
     ESP_ERROR_CHECK(nvs_flash_init());
+
+    gpio_leds_init();
+    mqtt_mutex = xSemaphoreCreateMutex();
+    assert(mqtt_mutex != NULL);// Cria mutex para proteger o cliente MQTT
+    led_queue = xQueueCreate(5, sizeof(led_cmd_t));
+    assert(led_queue != NULL);// Cria fila para 5 comandos de LED
+    xTaskCreate(led_task, "led_task", 2048, NULL, 5, NULL);
 
     wifi_init();
     mqtt_init();
@@ -213,7 +281,7 @@ void app_main(void)
 
     rc522_config_t scanner_config = {
         .driver = driver,
-    };
+    };// Configura o scanner RC522 com o driver SPI criado
 
     rc522_create(&scanner_config, &scanner);
     rc522_register_events(scanner, RC522_EVENT_PICC_STATE_CHANGED, on_picc_state_changed, NULL);
