@@ -16,12 +16,13 @@
 #include "rc522_picc.h"
 
 // ─── Configurações — edite aqui ───────────────────────────────────────────────
-#define WIFI_SSID        "TP-Link_A232"
-#define WIFI_PASS        "62707558"
+#define WIFI_SSID        "Angelika"
+#define WIFI_PASS        "98472222"
 #define MQTT_BROKER_URI  "mqtt://broker.hivemq.com:1883"   // IP ou hostname do broker
 #define MQTT_TOPIC       "RFID"                 // Tópico MQTT para publicar os eventos
 
 #define LED_VERMELHO_GPIO   22
+
 #define LED_VERDE_GPIO      4
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -30,6 +31,9 @@ static const char *TAG = "rfid";
 
 static EventGroupHandle_t wifi_event_group;
 #define WIFI_CONNECTED_BIT BIT0
+
+static EventGroupHandle_t mqtt_event_group;
+#define MQTT_CONNECTED_BIT BIT0
 
 static esp_mqtt_client_handle_t mqtt_client = NULL;// Handle do cliente MQTT
 
@@ -43,11 +47,14 @@ static rc522_spi_config_t driver_config = {
     .host_id = SPI3_HOST,
     .bus_config = &(spi_bus_config_t){
         .miso_io_num = 19,
+
+
         .mosi_io_num = 23,
         .sclk_io_num = 18,
     },
     .dev_config = {
         .spics_io_num = 5,
+        .clock_speed_hz = 5000000,
     },
     .rst_io_num = -1,
 };
@@ -68,8 +75,8 @@ typedef enum {
 
 
 static const authorized_uid_t authorized_uids[] = {
-    { .uid = {0xF3, 0x54, 0xB3, 0x29}, .length = 4, .name = "Cartão 1" },
-    { .uid = {0x01, 0x02, 0x03, 0x04}, .length = 4, .name = "Cartão 2" },
+    { .uid = {0xF3, 0x54, 0xB3, 0x29}, .length = 4, .name = "Cartão branco" },
+    { .uid = {0x01, 0x02, 0x03, 0x04}, .length = 4, .name = "Cartão azul" },
 };// Lista de UID autorizados
 
 #define AUTHORIZED_COUNT (sizeof(authorized_uids) / sizeof(authorized_uids[0]))
@@ -103,7 +110,7 @@ static void wifi_event_handler(void *arg, esp_event_base_t base,
     }
 }// Manipulador de eventos para Wi-Fi e IP
 
-static void gpio_leds_init(void)
+static void leds_init(void)
 {
     gpio_config_t io_conf = {
         .pin_bit_mask = (1ULL << LED_VERDE_GPIO) | (1ULL << LED_VERMELHO_GPIO),
@@ -173,9 +180,11 @@ static void mqtt_event_handler(void *arg, esp_event_base_t base,
     switch ((esp_mqtt_event_id_t) event_id) {
         case MQTT_EVENT_CONNECTED:
             ESP_LOGI(TAG, "MQTT conectado");
+            xEventGroupSetBits(mqtt_event_group, MQTT_CONNECTED_BIT);
             break;
         case MQTT_EVENT_DISCONNECTED:
             ESP_LOGW(TAG, "MQTT desconectado");
+            xEventGroupClearBits(mqtt_event_group, MQTT_CONNECTED_BIT);
             break;
         case MQTT_EVENT_ERROR:
             ESP_LOGE(TAG, "MQTT erro");
@@ -187,17 +196,27 @@ static void mqtt_event_handler(void *arg, esp_event_base_t base,
 
 static void mqtt_init(void)
 {
+    mqtt_event_group = xEventGroupCreate();
+
     esp_mqtt_client_config_t mqtt_cfg = {
         .broker.address.uri = MQTT_BROKER_URI,
     };
     mqtt_client = esp_mqtt_client_init(&mqtt_cfg);
     esp_mqtt_client_register_event(mqtt_client, ESP_EVENT_ANY_ID, mqtt_event_handler, NULL);
     esp_mqtt_client_start(mqtt_client);
-}// Inicializa o cliente MQTT, registra o manipulador de eventos e inicia a conexão
+
+    ESP_LOGI(TAG, "Aguardando conexão MQTT...");
+    xEventGroupWaitBits(mqtt_event_group, MQTT_CONNECTED_BIT, pdFALSE, pdTRUE, portMAX_DELAY);
+    ESP_LOGI(TAG, "MQTT pronto");
+}// Inicializa o cliente MQTT, registra o manipulador de eventos e aguarda conexão
 
 static void mqtt_publish_access(const rc522_picc_uid_t *uid, const authorized_uid_t *auth)
 {
     if (mqtt_client == NULL) return;
+    if (!(xEventGroupGetBits(mqtt_event_group) & MQTT_CONNECTED_BIT)) {
+        ESP_LOGW(TAG, "MQTT não conectado, publicação ignorada");
+        return;
+    }
 
     // Monta UID em formato "AA:BB:CC:DD"
     char uid_str[32] = {0};
@@ -266,7 +285,7 @@ void app_main(void)
 {
     ESP_ERROR_CHECK(nvs_flash_init());
 
-    gpio_leds_init();
+    leds_init();
     mqtt_mutex = xSemaphoreCreateMutex();
     assert(mqtt_mutex != NULL);// Cria mutex para proteger o cliente MQTT
     led_queue = xQueueCreate(5, sizeof(led_cmd_t));
