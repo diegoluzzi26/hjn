@@ -16,8 +16,8 @@
 #include "rc522_picc.h"
 
 // ─── Configurações — edite aqui ───────────────────────────────────────────────
-#define WIFI_SSID        "Angelika"
-#define WIFI_PASS        "98472222"
+#define WIFI_SSID        "moto g35 5G_1477"
+#define WIFI_PASS        "12345678"
 #define MQTT_BROKER_URI  "mqtt://broker.hivemq.com:1883"   // IP ou hostname do broker
 #define MQTT_TOPIC       "RFID"                 // Tópico MQTT para publicar os eventos
 
@@ -47,8 +47,6 @@ static rc522_spi_config_t driver_config = {
     .host_id = SPI3_HOST,
     .bus_config = &(spi_bus_config_t){
         .miso_io_num = 19,
-
-
         .mosi_io_num = 23,
         .sclk_io_num = 18,
     },
@@ -66,7 +64,7 @@ typedef struct {
     uint8_t uid[10];
     uint8_t length;
     const char *name;
-} authorized_uid_t;// Estrutura para armazenar UID autorizados
+} authorized_uid_t;// estrutura para armazenar UID autorizados
 
 typedef enum {
     LED_ON_PERMITIDO,
